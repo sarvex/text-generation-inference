@@ -68,13 +68,16 @@ __all__ = [
 ]
 
 if FLASH_ATTENTION:
-    __all__.append(FlashNeoX)
-    __all__.append(FlashNeoXSharded)
-    __all__.append(FlashSantacoder)
-    __all__.append(FlashSantacoderSharded)
-    __all__.append(FlashLlama)
-    __all__.append(FlashLlamaSharded)
-
+    __all__.extend(
+        (
+            FlashNeoX,
+            FlashNeoXSharded,
+            FlashSantacoder,
+            FlashSantacoderSharded,
+            FlashLlama,
+            FlashLlamaSharded,
+        )
+    )
 FLASH_ATT_ERROR_MESSAGE = (
     "{} requires Flash Attention CUDA kernels to be installed.\n"
     "Use the official Docker image (ghcr.io/huggingface/text-generation-inference:latest) "
@@ -104,9 +107,7 @@ def get_model(
     if "bigcode" in model_id:
         if sharded:
             if not FLASH_ATTENTION:
-                raise NotImplementedError(
-                    FLASH_ATT_ERROR_MESSAGE.format(f"Sharded Santacoder")
-                )
+                raise NotImplementedError(FLASH_ATT_ERROR_MESSAGE.format("Sharded Santacoder"))
             return FlashSantacoderSharded(model_id, revision, quantize=quantize)
         else:
             santacoder_cls = FlashSantacoder if FLASH_ATTENTION else SantaCoder
@@ -116,24 +117,22 @@ def get_model(
     model_type = config.model_type
 
     if model_type == "bloom":
-        if sharded:
-            return BLOOMSharded(model_id, revision, quantize=quantize)
-        else:
-            return BLOOM(model_id, revision, quantize=quantize)
-
-    if model_type == "gpt_neox":
+        return (
+            BLOOMSharded(model_id, revision, quantize=quantize)
+            if sharded
+            else BLOOM(model_id, revision, quantize=quantize)
+        )
+    elif model_type == "gpt_neox":
         if sharded:
             neox_cls = FlashNeoXSharded if FLASH_ATTENTION else GPTNeoxSharded
-            return neox_cls(model_id, revision, quantize=quantize)
         else:
             neox_cls = FlashNeoX if FLASH_ATTENTION else CausalLM
-            return neox_cls(model_id, revision, quantize=quantize)
-
-    if model_type == "llama":
+        return neox_cls(model_id, revision, quantize=quantize)
+    elif model_type == "llama":
         if sharded:
             if FLASH_ATTENTION:
                 return FlashLlamaSharded(model_id, revision, quantize=quantize)
-            raise NotImplementedError(FLASH_ATT_ERROR_MESSAGE.format(f"Sharded Llama"))
+            raise NotImplementedError(FLASH_ATT_ERROR_MESSAGE.format("Sharded Llama"))
         else:
             llama_cls = FlashLlama if FLASH_ATTENTION else CausalLM
             return llama_cls(model_id, revision, quantize=quantize)

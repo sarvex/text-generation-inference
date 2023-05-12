@@ -97,7 +97,7 @@ def download_weights(
         filenames = utils.weight_hub_files(model_id, revision, extension)
         utils.download_weights(filenames, model_id, revision)
     except utils.EntryNotFoundError as e:
-        if not extension == ".safetensors":
+        if extension != ".safetensors":
             raise e
 
         logger.warning(

@@ -31,12 +31,10 @@ class UDSOpenTelemetryAioServerInterceptor(OpenTelemetryAioServerInterceptor):
         # if we have details about the call, split into service and method
         if handler_call_details.method:
             service, method = handler_call_details.method.lstrip("/").split("/", 1)
-            attributes.update(
-                {
-                    SpanAttributes.RPC_METHOD: method,
-                    SpanAttributes.RPC_SERVICE: service,
-                }
-            )
+            attributes |= {
+                SpanAttributes.RPC_METHOD: method,
+                SpanAttributes.RPC_SERVICE: service,
+            }
 
         # add some attributes from the metadata
         metadata = dict(context.invocation_metadata())
@@ -44,7 +42,7 @@ class UDSOpenTelemetryAioServerInterceptor(OpenTelemetryAioServerInterceptor):
             attributes["rpc.user_agent"] = metadata["user-agent"]
 
         # We use gRPC over a UNIX socket
-        attributes.update({SpanAttributes.NET_TRANSPORT: "unix"})
+        attributes[SpanAttributes.NET_TRANSPORT] = "unix"
 
         return self._tracer.start_as_current_span(
             name=handler_call_details.method,

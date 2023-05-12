@@ -36,12 +36,11 @@ class FlashNeoXSharded(FlashNeoX):
         self.past_pad = None
         self.process_group, self.rank, self.world_size = initialize_torch_distributed()
         self.master = self.rank == 0
-        if torch.cuda.is_available():
-            device = torch.device(f"cuda:{self.rank}")
-            dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-        else:
+        if not torch.cuda.is_available():
             raise NotImplementedError("FlashNeoX is only available on GPU")
 
+        device = torch.device(f"cuda:{self.rank}")
+        dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
         tokenizer = AutoTokenizer.from_pretrained(
             model_id, revision=revision, padding_side="left", truncation_side="left"
         )

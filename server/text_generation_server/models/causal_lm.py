@@ -132,7 +132,7 @@ class CausalLMBatch(Batch):
 
     @tracer.start_as_current_span("filter")
     def filter(self, requests: List[generate_pb2.Request]) -> Optional["CausalLMBatch"]:
-        if len(requests) == 0:
+        if not requests:
             raise ValueError("Batch must have at least one request")
         if len(requests) == len(self):
             return self

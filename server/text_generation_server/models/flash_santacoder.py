@@ -29,12 +29,11 @@ tracer = trace.get_tracer(__name__)
 class FlashSantacoder(FlashCausalLM):
     def __init__(self, model_id: str, revision: Optional[str] = None, quantize=False):
         self.past_pad = None
-        if torch.cuda.is_available():
-            device = torch.device("cuda")
-            dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-        else:
+        if not torch.cuda.is_available():
             raise NotImplementedError("FlashSantacoder is only available on GPU")
 
+        device = torch.device("cuda")
+        dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
         tokenizer = AutoTokenizer.from_pretrained(
             model_id, revision=revision, padding_side="left", truncation_side="left"
         )
@@ -91,9 +90,9 @@ class FlashSantacoder(FlashCausalLM):
 
                 # Fused qkv
                 if "q_attn.weight" in key or "kv_attn.weight" in key:
-                    final_key = layer_name + ".c_attn.weight"
+                    final_key = f"{layer_name}.c_attn.weight"
                 elif "q_attn.bias" in key or "kv_attn.bias" in key:
-                    final_key = layer_name + ".c_attn.bias"
+                    final_key = f"{layer_name}.c_attn.bias"
 
                 else:
                     final_key = key
@@ -136,24 +135,18 @@ class FlashSantacoder(FlashCausalLM):
                             )
 
                     # Copy to correct slice
-                    if "q_attn.weight" in key:
+                    if "q_attn.weight" in key or "q_attn.bias" in key:
                         module._parameters[param_name][: value.shape[0]] = value
-                    elif "q_attn.bias" in key:
-                        module._parameters[param_name][: value.shape[0]] = value
-                    elif "kv_attn.weight" in key:
+                    elif "kv_attn.weight" in key or "kv_attn.bias" in key:
                         module._parameters[param_name][
                             model.transformer.head_size * model.transformer.num_heads :
                         ] = value
-                    elif "kv_attn.bias" in key:
-                        module._parameters[param_name][
-                            model.transformer.head_size * model.transformer.num_heads :
-                        ] = value
-                    else:
-                        if current_parameter_tensor.shape != value.shape:
-                            raise ValueError(
-                                f"Name {final_key} -- Current {current_parameter_tensor.shape} and got {value.shape}"
-                            )
+                    elif current_parameter_tensor.shape == value.shape:
                         module._parameters[param_name] = value
+                    else:
+                        raise ValueError(
+                            f"Name {final_key} -- Current {current_parameter_tensor.shape} and got {value.shape}"
+                        )
                 else:
                     module._buffers[param_name] = value
 
@@ -176,12 +169,11 @@ class FlashSantacoderSharded(FlashSantacoder):
         self.past_pad = None
         self.process_group, self.rank, self.world_size = initialize_torch_distributed()
         self.master = self.rank == 0
-        if torch.cuda.is_available():
-            device = torch.device(f"cuda:{self.rank}")
-            dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-        else:
+        if not torch.cuda.is_available():
             raise NotImplementedError("FlashSantacoderSharded is only available on GPU")
 
+        device = torch.device(f"cuda:{self.rank}")
+        dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
         tokenizer = AutoTokenizer.from_pretrained(
             model_id, revision=revision, padding_side="left", truncation_side="left"
         )
@@ -230,8 +222,8 @@ class FlashSantacoderSharded(FlashSantacoder):
     ):
         for file in filenames:
             with safe_open(
-                file, framework="pt", device=str(device) if not quantize else "cpu"
-            ) as f:
+                        file, framework="pt", device=str(device) if not quantize else "cpu"
+                    ) as f:
                 for key in f.keys():
                     slice_ = f.get_slice(key)
 
@@ -239,9 +231,9 @@ class FlashSantacoderSharded(FlashSantacoder):
 
                     # Fused qkv
                     if "q_attn.weight" in key or "kv_attn.weight" in key:
-                        final_key = layer_name + ".c_attn.weight"
+                        final_key = f"{layer_name}.c_attn.weight"
                     elif "q_attn.bias" in key or "kv_attn.bias" in key:
-                        final_key = layer_name + ".c_attn.bias"
+                        final_key = f"{layer_name}.c_attn.bias"
                     else:
                         final_key = key
 
@@ -336,12 +328,7 @@ class FlashSantacoderSharded(FlashSantacoder):
                             stop = (rank + 1) * block_size
                             tensor = tensor[start:stop]
                             module._parameters[param_name][: tensor.shape[0]] = tensor
-                        elif "kv_attn.weight" in key:
-                            module._parameters[param_name][
-                                model.transformer.head_size
-                                * model.transformer.num_heads :
-                            ] = tensor
-                        elif "kv_attn.bias" in key:
+                        elif "kv_attn.weight" in key or "kv_attn.bias" in key:
                             module._parameters[param_name][
                                 model.transformer.head_size
                                 * model.transformer.num_heads :
@@ -363,13 +350,13 @@ class FlashSantacoderSharded(FlashSantacoder):
                             module._parameters[param_name][
                                 q_tensor.shape[0] :
                             ] = kv_tensor
-                        else:
-                            if current_parameter_tensor.shape != tensor.shape:
-                                raise ValueError(
-                                    f"Name {key} -- Current {current_parameter_tensor.shape} and got {tensor.shape}"
-                                )
-
+                        elif current_parameter_tensor.shape == tensor.shape:
                             module._parameters[param_name] = tensor
+                        else:
+                            raise ValueError(
+                                f"Name {key} -- Current {current_parameter_tensor.shape} and got {tensor.shape}"
+                            )
+
                     else:
                         module._buffers[param_name] = tensor
         torch.cuda.empty_cache()

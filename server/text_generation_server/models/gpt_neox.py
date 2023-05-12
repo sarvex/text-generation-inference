@@ -208,25 +208,23 @@ class GPTNeoxSharded(CausalLM):
     def forward(
         self, input_ids, attention_mask, position_ids, past_key_values: Optional = None
     ):
-        if self.model.gpt_neox.tp_embeddings:
-            outputs = self.model.forward(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                past_key_values=past_key_values,
-                use_cache=True,
-            )
-
-            # Logits are sharded, so we need to gather them
-            logits = [torch.empty_like(outputs.logits) for _ in range(self.world_size)]
-            torch.distributed.all_gather(
-                logits, outputs.logits, group=self.process_group
-            )
-            logits = torch.cat(logits, dim=2)
-
-            return logits, outputs.past_key_values
-        # While the model itself is sharded, the embeddings might not as they might not be dividable by num-shard
-        else:
+        if not self.model.gpt_neox.tp_embeddings:
             return super(GPTNeoxSharded, self).forward(
                 input_ids, attention_mask, position_ids, past_key_values
             )
+        outputs = self.model.forward(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            use_cache=True,
+        )
+
+        # Logits are sharded, so we need to gather them
+        logits = [torch.empty_like(outputs.logits) for _ in range(self.world_size)]
+        torch.distributed.all_gather(
+            logits, outputs.logits, group=self.process_group
+        )
+        logits = torch.cat(logits, dim=2)
+
+        return logits, outputs.past_key_values

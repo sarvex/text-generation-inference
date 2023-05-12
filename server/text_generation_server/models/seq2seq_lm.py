@@ -143,7 +143,7 @@ class Seq2SeqLMBatch(Batch):
     def filter(
         self, requests: List[generate_pb2.Request]
     ) -> Optional["Seq2SeqLMBatch"]:
-        if len(requests) == 0:
+        if not requests:
             raise ValueError("Batch must have at least one request")
         if len(requests) == len(self):
             return self

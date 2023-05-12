@@ -30,12 +30,11 @@ tracer = trace.get_tracer(__name__)
 class FlashLlama(FlashCausalLM):
     def __init__(self, model_id: str, revision: Optional[str] = None, quantize=False):
         self.past_pad = None
-        if torch.cuda.is_available():
-            device = torch.device("cuda")
-            dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-        else:
+        if not torch.cuda.is_available():
             raise NotImplementedError("FlashLlama is only available on GPU")
 
+        device = torch.device("cuda")
+        dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
         tokenizer = LlamaTokenizer.from_pretrained(
             model_id,
             revision=revision,
@@ -86,11 +85,10 @@ class FlashLlama(FlashCausalLM):
 
                 # Fused qkv
                 if "q_proj" in key or "k_proj" in key or "v_proj" in key:
-                    final_key = layer_name + ".query_key_value.weight"
+                    final_key = f"{layer_name}.query_key_value.weight"
 
-                # Fused gate and up projs
                 elif "gate_proj" in key or "up_proj" in key:
-                    final_key = layer_name + ".gate_up_proj.weight"
+                    final_key = f"{layer_name}.gate_up_proj.weight"
                 else:
                     final_key = key
 
@@ -128,12 +126,12 @@ class FlashLlama(FlashCausalLM):
                         module._parameters[param_name][: value.shape[0]] = value
                     elif "up_proj" in key:
                         module._parameters[param_name][value.shape[0] :] = value
-                    else:
-                        if current_parameter_tensor.shape != value.shape:
-                            raise ValueError(
-                                f"Name {final_key} -- Current {current_parameter_tensor.shape} and got {value.shape}"
-                            )
+                    elif current_parameter_tensor.shape == value.shape:
                         module._parameters[param_name] = value
+                    else:
+                        raise ValueError(
+                            f"Name {final_key} -- Current {current_parameter_tensor.shape} and got {value.shape}"
+                        )
                 else:
                     module._buffers[param_name] = value
 
@@ -150,12 +148,11 @@ class FlashLlamaSharded(FlashLlama):
         self.past_pad = None
         self.process_group, self.rank, self.world_size = initialize_torch_distributed()
         self.master = self.rank == 0
-        if torch.cuda.is_available():
-            device = torch.device(f"cuda:{self.rank}")
-            dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-        else:
+        if not torch.cuda.is_available():
             raise NotImplementedError("FlashLlama is only available on GPU")
 
+        device = torch.device(f"cuda:{self.rank}")
+        dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
         tokenizer = LlamaTokenizer.from_pretrained(
             model_id,
             revision=revision,
@@ -205,8 +202,8 @@ class FlashLlamaSharded(FlashLlama):
     ):
         for file in filenames:
             with safe_open(
-                file, framework="pt", device=str(device) if not quantize else "cpu"
-            ) as f:
+                        file, framework="pt", device=str(device) if not quantize else "cpu"
+                    ) as f:
                 for name in f.keys():
                     slice_ = f.get_slice(name)
 
@@ -214,11 +211,10 @@ class FlashLlamaSharded(FlashLlama):
 
                     # Fused qkv
                     if "q_proj" in name or "k_proj" in name or "v_proj" in name:
-                        final_name = layer_name + ".query_key_value.weight"
+                        final_name = f"{layer_name}.query_key_value.weight"
 
-                    # Fused gate and up projs
                     elif "gate_proj" in name or "up_proj" in name:
-                        final_name = layer_name + ".gate_up_proj.weight"
+                        final_name = f"{layer_name}.gate_up_proj.weight"
                     else:
                         final_name = name
 
@@ -290,13 +286,13 @@ class FlashLlamaSharded(FlashLlama):
                             module._parameters[param_name][: tensor.shape[0]] = tensor
                         elif "up_proj" in name:
                             module._parameters[param_name][tensor.shape[0] :] = tensor
-                        else:
-                            if current_parameter_tensor.shape != tensor.shape:
-                                raise ValueError(
-                                    f"Name {name} -- Current {current_parameter_tensor.shape} and got {tensor.shape}"
-                                )
-
+                        elif current_parameter_tensor.shape == tensor.shape:
                             module._parameters[param_name] = tensor
+
+                        else:
+                            raise ValueError(
+                                f"Name {name} -- Current {current_parameter_tensor.shape} and got {tensor.shape}"
+                            )
 
                     else:
                         module._buffers[param_name] = tensor

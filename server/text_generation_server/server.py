@@ -67,7 +67,7 @@ class TextGenerationService(generate_pb2_grpc.TextGenerationServiceServicer):
             if batch is not None:
                 batches.append(batch)
 
-        if len(batches) == 0:
+        if not batches:
             raise ValueError("All batches are empty")
 
         if len(batches) > 1:

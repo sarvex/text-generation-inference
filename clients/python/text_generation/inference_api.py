@@ -21,7 +21,7 @@ def deployed_models() -> List[DeployedModel]:
         List[DeployedModel]: list of all currently deployed models
     """
     resp = requests.get(
-        f"https://api-inference.huggingface.co/framework/text-generation-inference",
+        "https://api-inference.huggingface.co/framework/text-generation-inference",
         timeout=5,
     )
 
@@ -29,8 +29,7 @@ def deployed_models() -> List[DeployedModel]:
     if resp.status_code != 200:
         raise parse_error(resp.status_code, payload)
 
-    models = [DeployedModel(**raw_deployed_model) for raw_deployed_model in payload]
-    return models
+    return [DeployedModel(**raw_deployed_model) for raw_deployed_model in payload]
 
 
 def check_model_support(repo_id: str) -> bool:
@@ -50,8 +49,7 @@ def check_model_support(repo_id: str) -> bool:
         raise parse_error(resp.status_code, payload)
 
     framework = payload["framework"]
-    supported = framework == "text-generation-inference"
-    return supported
+    return framework == "text-generation-inference"
 
 
 class InferenceAPIClient(Client):

@@ -23,15 +23,15 @@ def weight_hub_files(
     """Get the weights filenames on the hub"""
     api = HfApi()
     info = api.model_info(model_id, revision=revision)
-    filenames = [s.rfilename for s in info.siblings if s.rfilename.endswith(extension)]
-
-    if not filenames:
+    if filenames := [
+        s.rfilename for s in info.siblings if s.rfilename.endswith(extension)
+    ]:
+        return filenames
+    else:
         raise EntryNotFoundError(
             f"No {extension} weights found for model {model_id} and revision {revision}.",
             None,
         )
-
-    return filenames
 
 
 def try_to_load_from_cache(

@@ -37,7 +37,7 @@ def remove_shared_pointers(tensors: Dict[str, torch.Tensor]):
         ptrs[v.data_ptr()].append(k)
 
     # Iterate over all found memory addresses
-    for ptr, names in ptrs.items():
+    for names in ptrs.values():
         if len(names) > 1:
             # Multiple tensors are point to the same memory
             # Only keep the first tensor

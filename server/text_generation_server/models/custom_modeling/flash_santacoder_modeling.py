@@ -98,10 +98,9 @@ class FastLinear(nn.Linear):
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         if self.quantized:
             return self.bnb_linear(input)
-        else:
-            if self.bias is not None:
-                return torch.addmm(self.bias, input, self.weight)
-            return torch.matmul(input, self.weight)
+        if self.bias is not None:
+            return torch.addmm(self.bias, input, self.weight)
+        return torch.matmul(input, self.weight)
 
 
 class TensorParallelColumnLinear(FastLinear):

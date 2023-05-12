@@ -147,7 +147,7 @@ class FlashCausalLMBatch(Batch):
 
     @tracer.start_as_current_span("filter")
     def filter(self, requests: List[generate_pb2.Request]) -> "FlashCausalLMBatch":
-        if len(requests) == 0:
+        if not requests:
             raise ValueError("Batch must have at least one request")
         # We assume that if len(requests) == len(self) then the requests are the same
         if len(requests) == len(self):
@@ -289,14 +289,12 @@ class FlashCausalLMBatch(Batch):
             if len(batch) != 1:
                 past_key_values.extend(batch.past_key_values)
             else:
-                # past was pre-allocated for this batch
-                # We need to slice to remove the padding
-                past_key_values.append(
-                    batch.past_key_values[:, : batch.input_lengths[0]]
+                past_key_values.extend(
+                    (
+                        batch.past_key_values[:, : batch.input_lengths[0]],
+                        batch.past_pad,
+                    )
                 )
-                # Add one padding
-                past_key_values.append(batch.past_pad)
-
             all_input_ids.extend(batch.all_input_ids)
             all_input_ids_tensor.extend(batch.all_input_ids_tensor)
 
@@ -344,12 +342,11 @@ class FlashCausalLM(Model):
         decode_buffer: int = 3,
     ):
         self.past_pad = None
-        if torch.cuda.is_available():
-            device = torch.device("cuda")
-            dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-        else:
+        if not torch.cuda.is_available():
             raise NotImplementedError("FlashCausalLM is only available on GPU")
 
+        device = torch.device("cuda")
+        dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
         tokenizer = AutoTokenizer.from_pretrained(
             model_id, revision=revision, padding_side="left", truncation_side="left"
         )
@@ -500,15 +497,7 @@ class FlashCausalLM(Model):
             end_index = cumulative_length + input_length
 
             prefill = stopping_criteria.current_tokens == 0
-            if prefill:
-                # Prefill mode
-                # out is of shape [cumulative_sequence_lengths, vocab_size]
-                logits = out[start_index:end_index]
-            else:
-                # Decode mode
-                # out is of shape [batch_size, vocab_size]
-                logits = out[i].unsqueeze(0)
-
+            logits = out[start_index:end_index] if prefill else out[i].unsqueeze(0)
             # Select next token
             next_token_id, logprobs = next_token_chooser(
                 all_input_ids_tensor[None, :input_length], logits

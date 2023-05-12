@@ -25,8 +25,7 @@ class Sampling:
 
     def __call__(self, logits):
         probs = torch.nn.functional.softmax(logits, -1)
-        next_tokens = torch.multinomial(probs, num_samples=1, generator=self.generator)
-        return next_tokens
+        return torch.multinomial(probs, num_samples=1, generator=self.generator)
 
 
 class Greedy:
@@ -114,9 +113,7 @@ class StopSequenceCriteria:
         self.regex = re.compile(f".*{stop_sequence}$")
 
     def __call__(self, output: str) -> bool:
-        if self.regex.findall(output):
-            return True
-        return False
+        return bool(self.regex.findall(output))
 
 
 class StoppingCriteria:
@@ -143,11 +140,14 @@ class StoppingCriteria:
             return True, FinishReason.FINISH_REASON_EOS_TOKEN
 
         self.current_output += last_output
-        for stop_sequence_criteria in self.stop_sequence_criterias:
-            if stop_sequence_criteria(self.current_output):
-                return True, FinishReason.FINISH_REASON_STOP_SEQUENCE
-
-        return False, None
+        return next(
+            (
+                (True, FinishReason.FINISH_REASON_STOP_SEQUENCE)
+                for stop_sequence_criteria in self.stop_sequence_criterias
+                if stop_sequence_criteria(self.current_output)
+            ),
+            (False, None),
+        )
 
     @classmethod
     def from_pb(
