@@ -94,8 +94,8 @@ class GalacticaCausalLMBatch(CausalLMBatch):
         inputs = []
         next_token_choosers = []
         stopping_criterias = []
-        offsets = []
-        token_offsets = []
+        prefix_offsets = []
+        read_offsets = []
         requests_idx_mapping = {}
 
         # Parse batch
@@ -106,8 +106,6 @@ class GalacticaCausalLMBatch(CausalLMBatch):
             requests_idx_mapping[r.id] = i
             # Add escape_custom_split_sequence to the CausalLMBatch logic
             inputs.append(escape_custom_split_sequence(r.inputs))
-            offsets.append(None)
-            token_offsets.append(None)
             next_token_choosers.append(NextTokenChooser.from_pb(r.parameters, device))
             stopping_criteria = StoppingCriteria.from_pb(
                 r.stopping_parameters, tokenizer
@@ -127,6 +125,10 @@ class GalacticaCausalLMBatch(CausalLMBatch):
             truncation=True,
             max_length=max_truncation,
         ).to(device)
+        for _ in pb.requests:
+            input_len = tokenized_inputs["input_ids"].shape[1]
+            prefix_offsets.append(0)
+            read_offsets.append(input_len)
 
         input_lengths = tokenized_inputs["attention_mask"].sum(1)
         max_input_length = input_lengths.max()
@@ -155,8 +157,8 @@ class GalacticaCausalLMBatch(CausalLMBatch):
             past_key_values=None,
             all_input_ids=list(all_input_ids),
             input_lengths=input_lengths.tolist(),
-            offsets=offsets,
-            token_offsets=token_offsets,
+            prefix_offsets=prefix_offsets,
+            read_offsets=read_offsets,
             next_token_choosers=next_token_choosers,
             stopping_criterias=stopping_criterias,
             max_input_length=max_input_length.item(),
@@ -193,10 +195,13 @@ class Galactica(OPT):
 
 class GalacticaSharded(Galactica):
     def __init__(
-        self, model_id: str, revision: Optional[str] = None, quantize: bool = False
+        self,
+        model_id: str,
+        revision: Optional[str] = None,
+        quantize: Optional[str] = None,
+        trust_remote_code: bool = False,
     ):
         self.process_group, rank, world_size = initialize_torch_distributed()
-        self.master = rank == 0
         if torch.cuda.is_available():
             device = torch.device(f"cuda:{rank}")
             dtype = torch.float16
@@ -205,11 +210,18 @@ class GalacticaSharded(Galactica):
             dtype = torch.float32
 
         tokenizer = AutoTokenizer.from_pretrained(
-            model_id, revision=revision, padding_side="left", truncation_side="left"
+            model_id,
+            revision=revision,
+            padding_side="left",
+            truncation_side="left",
+            trust_remote_code=trust_remote_code,
         )
 
         config = AutoConfig.from_pretrained(
-            model_id, revision=revision, tp_parallel=True
+            model_id,
+            revision=revision,
+            tp_parallel=True,
+            trust_remote_code=trust_remote_code,
         )
         tokenizer.pad_token_id = config.pad_token_id
 
@@ -217,7 +229,9 @@ class GalacticaSharded(Galactica):
         filenames = weight_files(model_id, revision=revision, extension=".safetensors")
 
         with init_empty_weights():
-            model = AutoModelForCausalLM.from_config(config)
+            model = AutoModelForCausalLM.from_config(
+                config, trust_remote_code=trust_remote_code
+            )
 
         torch.distributed.barrier(group=self.process_group)
         self.load_weights(
@@ -229,9 +243,9 @@ class GalacticaSharded(Galactica):
             rank=rank,
             world_size=world_size,
         )
-        self.model = model.eval()
         torch.distributed.barrier(group=self.process_group)
         super(CausalLM, self).__init__(
+            model=model,
             tokenizer=tokenizer,
             requires_padding=True,
             dtype=dtype,
@@ -244,7 +258,7 @@ class GalacticaSharded(Galactica):
     def load_weights(
         model,
         filenames: List[str],
-        quantize: bool,
+        quantize: Optional[str],
         device: torch.device,
         dtype: torch.dtype,
         rank: int,
@@ -253,7 +267,7 @@ class GalacticaSharded(Galactica):
         parameters = dict(model.named_parameters())
         for file in filenames:
             with safe_open(
-                file, framework="pt", device=str(device) if not quantize else "cpu"
+                file, framework="pt", device=str(device) if quantize is None else "cpu"
             ) as f:
                 for name in f.keys():
                     if name == "lm_head.weight":
@@ -299,7 +313,7 @@ class GalacticaSharded(Galactica):
 
                     tensor = tensor.contiguous().to(dtype)
 
-                    if quantize:
+                    if quantize == "bitsandbytes":
                         if not HAS_BITS_AND_BYTES:
                             raise ImportError(
                                 "bitsandbytes is not available on your machine either because it is not installed "
@@ -349,22 +363,18 @@ class GalacticaSharded(Galactica):
                                 return linear
 
                             module.linear = replace_linear(state)
-
-                        else:
+                        elif quantize == "gptq":
+                            raise NotImplementedError(
+                                "`gptq` is not implemented for now"
+                            )
+                        elif quantize is None:
                             tensor = tensor.to(device)
+                        else:
+                            raise ValueError(f"Unexpected quantize `{quantize}`")
 
                     module._parameters[param_name] = tensor
                     if name == "model.decoder.embed_tokens.weight":
                         model.lm_head._parameters["weight"] = tensor
-
-        uninitialized_parameters = []
-        for n, p in model.named_parameters():
-            if p.data.device == torch.device("meta"):
-                uninitialized_parameters.append(n)
-        if uninitialized_parameters:
-            raise RuntimeError(
-                f"found uninitialized parameters in model: {uninitialized_parameters}"
-            )
 
     def forward(
         self, input_ids, attention_mask, position_ids, past_key_values: Optional = None

@@ -52,8 +52,8 @@ class FlashCausalLMBatch(Batch):
 
     # Lengths of all generations present in the batch
     input_lengths: List[int]
-    offsets: List[Optional[int]]
-    token_offsets: List[Optional[int]]
+    prefix_offsets: List[Optional[int]]
+    read_offsets: List[Optional[int]]
 
     # Generation helpers
     next_token_choosers: List[NextTokenChooser]
@@ -62,10 +62,10 @@ class FlashCausalLMBatch(Batch):
     # Maximum number of tokens this batch will grow to
     max_tokens: int
 
-    def to_pb(self) -> generate_pb2.Batch:
-        return generate_pb2.Batch(
+    def to_pb(self) -> generate_pb2.CachedBatch:
+        return generate_pb2.CachedBatch(
             id=self.batch_id,
-            requests=self.requests,
+            request_ids=[r.id for r in self.requests],
             size=len(self),
             max_tokens=self.max_tokens,
         )
@@ -82,8 +82,8 @@ class FlashCausalLMBatch(Batch):
         max_seqlen = 0
 
         input_lengths = []
-        offsets = []
-        token_offsets = []
+        prefix_offsets = []
+        read_offsets = []
         all_input_ids = []
         requests_idx_mapping = {}
 
@@ -108,8 +108,8 @@ class FlashCausalLMBatch(Batch):
             max_seqlen = max(max_seqlen, input_length)
             input_lengths.append(input_length)
 
-            offsets.append(None)
-            token_offsets.append(None)
+            prefix_offsets.append(0)
+            read_offsets.append(input_length)
 
             all_input_ids.append(tokenized_input)
 
@@ -151,8 +151,8 @@ class FlashCausalLMBatch(Batch):
             max_seqlen=max_seqlen,
             past_key_values=None,
             input_lengths=input_lengths,
-            offsets=offsets,
-            token_offsets=token_offsets,
+            prefix_offsets=prefix_offsets,
+            read_offsets=read_offsets,
             all_input_ids=all_input_ids,
             all_input_ids_tensor=[],
             next_token_choosers=next_token_choosers,
@@ -161,14 +161,14 @@ class FlashCausalLMBatch(Batch):
         )
 
     @tracer.start_as_current_span("filter")
-    def filter(self, requests: List[generate_pb2.Request]) -> "FlashCausalLMBatch":
-        if len(requests) == 0:
+    def filter(self, request_ids: List[int]) -> "FlashCausalLMBatch":
+        if len(request_ids) == 0:
             raise ValueError("Batch must have at least one request")
         # We assume that if len(requests) == len(self) then the requests are the same
-        if len(requests) == len(self):
+        if len(request_ids) == len(self):
             return self
 
-        single_request = len(requests) == 1
+        single_request = len(request_ids) == 1
 
         # Cumulative length
         cumulative_length = 0
@@ -176,31 +176,34 @@ class FlashCausalLMBatch(Batch):
         # New values after filtering
         requests_idx_mapping = {}
 
-        input_ids = self.input_ids.new_empty(len(requests))
-        position_ids = self.position_ids.new_empty(len(requests))
+        input_ids = self.input_ids.new_empty(len(request_ids))
+        position_ids = self.position_ids.new_empty(len(request_ids))
         # Create on CPU to only move to GPU once instead of at every copy
-        cu_seqlens = torch.zeros(len(requests) + 1, dtype=torch.int32)
+        cu_seqlens = torch.zeros(len(request_ids) + 1, dtype=torch.int32)
         cu_seqlens_q = torch.arange(
-            0, len(requests) + 1, device=self.cu_seqlens_q.device, dtype=torch.int32
+            0, len(request_ids) + 1, device=self.cu_seqlens_q.device, dtype=torch.int32
         )
         max_seqlen = 0
         past_key_values = []
 
+        requests = []
         all_input_ids = []
         all_input_ids_tensor = []
 
         input_lengths = []
-        offsets = []
-        token_offsets = []
+        prefix_offsets = []
+        read_offsets = []
 
         next_token_choosers = []
         stopping_criterias = []
 
         max_tokens = 0
 
-        for i, r in enumerate(requests):
-            idx = self.requests_idx_mapping[r.id]
-            requests_idx_mapping[r.id] = i
+        for i, request_id in enumerate(request_ids):
+            idx = self.requests_idx_mapping[request_id]
+            requests_idx_mapping[request_id] = i
+
+            requests.append(self.requests[idx])
 
             # Get length
             request_input_length = self.input_lengths[idx]
@@ -222,8 +225,8 @@ class FlashCausalLMBatch(Batch):
             all_input_ids_tensor.append(self.all_input_ids_tensor[idx])
 
             input_lengths.append(request_input_length)
-            offsets.append(self.offsets[idx])
-            token_offsets.append(self.token_offsets[idx])
+            prefix_offsets.append(self.prefix_offsets[idx])
+            read_offsets.append(self.read_offsets[idx])
 
             next_token_choosers.append(self.next_token_choosers[idx])
 
@@ -269,8 +272,8 @@ class FlashCausalLMBatch(Batch):
             max_seqlen=max_seqlen,
             past_key_values=past_key_values,
             input_lengths=input_lengths,
-            offsets=offsets,
-            token_offsets=token_offsets,
+            prefix_offsets=prefix_offsets,
+            read_offsets=read_offsets,
             all_input_ids=all_input_ids,
             all_input_ids_tensor=all_input_ids_tensor,
             next_token_choosers=next_token_choosers,
@@ -302,8 +305,8 @@ class FlashCausalLMBatch(Batch):
         all_input_ids_tensor = []
 
         input_lengths = []
-        offsets = []
-        token_offsets = []
+        prefix_offsets = []
+        read_offsets = []
 
         next_token_choosers = []
         stopping_criterias = []
@@ -347,8 +350,8 @@ class FlashCausalLMBatch(Batch):
             all_input_ids_tensor.extend(batch.all_input_ids_tensor)
 
             input_lengths.extend(batch.input_lengths)
-            offsets.extend(batch.offsets)
-            token_offsets.extend(batch.token_offsets)
+            prefix_offsets.extend(batch.prefix_offsets)
+            read_offsets.extend(batch.read_offsets)
 
             next_token_choosers.extend(batch.next_token_choosers)
             stopping_criterias.extend(batch.stopping_criterias)
@@ -374,8 +377,8 @@ class FlashCausalLMBatch(Batch):
             max_seqlen=max_seqlen,
             past_key_values=past_key_values,
             input_lengths=input_lengths,
-            offsets=offsets,
-            token_offsets=token_offsets,
+            prefix_offsets=prefix_offsets,
+            read_offsets=read_offsets,
             all_input_ids=all_input_ids,
             all_input_ids_tensor=all_input_ids_tensor,
             next_token_choosers=next_token_choosers,
@@ -393,8 +396,8 @@ class FlashCausalLM(Model):
         model_cls: Type[PreTrainedModel],
         model_id: str,
         revision: Optional[str] = None,
-        quantize: bool = False,
-        decode_buffer: int = 3,
+        quantize: Optional[str] = None,
+        trust_remote_code: bool = False,
     ):
         if torch.cuda.is_available():
             device = torch.device("cuda")
@@ -403,25 +406,26 @@ class FlashCausalLM(Model):
             raise NotImplementedError("FlashCausalLM is only available on GPU")
 
         tokenizer = AutoTokenizer.from_pretrained(
-            model_id, revision=revision, padding_side="left", truncation_side="left"
+            model_id,
+            revision=revision,
+            padding_side="left",
+            truncation_side="left",
+            trust_remote_code=trust_remote_code,
         )
-        self.model = (
-            model_cls.from_pretrained(
-                model_id,
-                revision=revision,
-                torch_dtype=dtype,
-                load_in_8bit=quantize,
-            )
-            .eval()
-            .to(device)
-        )
+        model = model_cls.from_pretrained(
+            model_id,
+            revision=revision,
+            torch_dtype=dtype,
+            load_in_8bit=quantize == "bitsandbytes",
+            trust_remote_code=trust_remote_code,
+        ).to(device)
 
         super(FlashCausalLM, self).__init__(
+            model=model,
             tokenizer=tokenizer,
             requires_padding=False,
             dtype=dtype,
             device=device,
-            decode_buffer=decode_buffer,
         )
 
     @property
@@ -645,8 +649,8 @@ class FlashCausalLM(Model):
         iterator = zip(
             batch.requests,
             batch.input_lengths,
-            batch.offsets,
-            batch.token_offsets,
+            batch.prefix_offsets,
+            batch.read_offsets,
             batch.next_token_choosers,
             batch.stopping_criterias,
             batch.all_input_ids,
@@ -659,8 +663,8 @@ class FlashCausalLM(Model):
         for i, (
             request,
             input_length,
-            offset,
-            token_offset,
+            prefix_offset,
+            read_offset,
             next_token_chooser,
             stopping_criteria,
             all_input_ids,
@@ -675,10 +679,10 @@ class FlashCausalLM(Model):
             all_input_ids.append(next_token_id)
 
             # Generated token
-            next_token_text, offset, token_offset = self.decode_token(
+            next_token_text, prefix_offset, read_offset = self.decode_token(
                 all_input_ids,
-                offset,
-                token_offset,
+                prefix_offset,
+                read_offset,
             )
 
             # Evaluate stopping criteria
@@ -744,8 +748,8 @@ class FlashCausalLM(Model):
 
             # Update values
             batch.input_lengths[i] = new_input_length
-            batch.offsets[i] = offset
-            batch.token_offsets[i] = token_offset
+            batch.prefix_offsets[i] = prefix_offset
+            batch.read_offsets[i] = read_offset
             batch.all_input_ids[i] = all_input_ids
             batch.max_seqlen = batch.max_seqlen + 1
             cumulative_length += input_length
